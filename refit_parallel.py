@@ -180,10 +180,39 @@ def sweep_njobs(configs, n_jobs_grid, out="parallel_times.csv"):
     Parallel efficiency should be noticeably better for the large one,
     since process overhead amortizes over longer fits.
     """
-    # TODO 10: nested loop, time ensemble_parallel, compute speedup,
-    #          write CSV with columns: N, degree, d, B, n_jobs, mode,
-    #          refit_s, speedup
-    raise NotImplementedError
+    # TODO 10 below
+    import csv, platform, os, time
+
+    n_cores = os.cpu_count()
+    grid = [j for j in n_jobs_grid if j <= n_cores]
+    machine = platform.machine() + "-" + platform.node()
+
+    rows = []
+    for (N, degree, B) in configs:
+        theta, y = make_buffer(N, degree)
+        d = theta.shape[1]
+        baseline = None
+        for nj in grid:
+            ensemble_parallel(theta, y, n_models=B, n_jobs=nj)      # warm-up
+            ts = []
+            #BASE range(3), testing range(7)
+            for _ in range(7):
+                t0 = time.perf_counter()
+                ensemble_parallel(theta, y, n_models=B, n_jobs=nj)
+                ts.append(time.perf_counter() - t0)
+            t = min(ts)
+            if baseline is None:
+                baseline = t
+            rows.append(dict(machine=machine, n_cores=n_cores, N=N, degree=degree,
+                             d=d, B=B, n_jobs=nj, refit_s=round(t, 4),
+                             speedup=round(baseline / t, 3)))
+            print(f"N={N} d={d} B={B}  n_jobs={nj:3d}  {t:.3f}s  {baseline/t:.2f}x")
+
+    with open(out, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    print(f"wrote {len(rows)} rows to {out}")
 
 
 if __name__ == "__main__":
