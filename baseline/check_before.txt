@@ -1,0 +1,5 @@
+stable support     ref  20  par  20
+disagreement       ref-only 0  par-only 0
+rel difference     median 0.0000  max 0.0000
+spread ratio       median 1.206 p10 0.578  p90 2.488
+-> PASS

@@ -23,8 +23,12 @@ from pysindy.optimizers import EnsembleOptimizer, STLSQ
 from refit_profile import (ALPHA, N_STATE, THRESHOLD, build_theta,
                            make_buffer, time_refit)
 
+# library columns dropped per member. single source of truth, check_backends
+# asserts against this so it can't drift from what fit_one_member actually does
+N_DROP = 1
 
-def fit_one_member(theta, y, seed, n_drop=1):
+
+def fit_one_member(theta, y, seed, n_drop=N_DROP):
     """
     fit a single ensemble member
     mirrors EnsembleOptimizer._reduce:
@@ -32,19 +36,27 @@ def fit_one_member(theta, y, seed, n_drop=1):
       2. drop n_drop library columns, chosen without replacement, sorted
       3. fit a FRESH STLSQ (never share one across workers)
       4. scatter coefficients back into a full-width zero array
-    returns array of shape (n_targets, n_features)
+
+    returns:
+        coef      : ndarray, shape (n_targets, n_features)
+        keep_mask : ndarray, shape (n_features,), bool
     """
     rng = np.random.default_rng(seed)
     n_samples, n_features = theta.shape
     rows = rng.integers(0, n_samples, n_samples)
     theta_boot, y_boot = theta[rows], y[rows]
     keep_inds = np.sort(rng.choice(n_features, n_features - n_drop, replace=False))
+    # bool mask of which library terms this member was OFFERED. has to come back
+    # out with the coefs, recomputing it in the parent gives masks that don't
+    # line up with the fit they label
+    keep_mask = np.zeros(n_features, dtype=bool)
+    keep_mask[keep_inds] = True
     theta_sub = theta_boot[:, keep_inds]
     opt = STLSQ(threshold=THRESHOLD, alpha=ALPHA)
     opt.fit(theta_sub, y_boot)
     coef = np.zeros((y.shape[1], n_features))
     coef[:, keep_inds] = opt.coef_
-    return coef
+    return coef, keep_mask
 
 
 def ensemble_parallel(theta, y, n_models=20, n_jobs=1, base_seed=0,
@@ -71,14 +83,19 @@ def ensemble_parallel(theta, y, n_models=20, n_jobs=1, base_seed=0,
                   all member coefficients, retained for spread diagnostics
                   e.g. coefficient of variation over active terms, for use as a
                   refit-acceptance gate.
+        masks   : ndarray, shape (n_models, n_features), bool
+                  True where the member was offered that library term. needed to
+                  condition the CV on term retention, averaging over all members
+                  conflates "term is uncertain" with "member never got the term"
     """
     theta = np.asarray(theta).view(np.ndarray)
     y = np.asarray(y).view(np.ndarray)
-    coefs = Parallel(n_jobs=n_jobs, backend=backend, batch_size=batch_size)(
+    results = Parallel(n_jobs=n_jobs, backend=backend, batch_size=batch_size)(
         delayed(fit_one_member)(theta, y, base_seed + i) for i in range(n_models)
     )
-    stacked = np.stack(coefs, axis=0)
-    return np.median(stacked, axis=0), stacked
+    stacked = np.stack([r[0] for r in results], axis=0)
+    masks = np.stack([r[1] for r in results], axis=0)
+    return np.median(stacked, axis=0), stacked, masks
 
 
 def check_correctness(n_samples=8000, degree=2, n_models=20, n_trials=10):
@@ -110,8 +127,8 @@ def check_correctness(n_samples=8000, degree=2, n_models=20, n_trials=10):
 
     par_coefs, par_members = [], []
     for t in range(n_trials):
-        C, S = ensemble_parallel(theta, y, n_models=n_models,
-                                 n_jobs=1, base_seed=1000 * t)
+        C, S, _ = ensemble_parallel(theta, y, n_models=n_models,
+                                    n_jobs=1, base_seed=1000 * t)
         par_coefs.append(C)
         par_members.append(S)
 
@@ -161,10 +178,24 @@ def check_backends(n_samples=8000, degree=2, n_models=20, n_jobs=4):
     share no state, so backend choice cannot change the answer. if this fails,
     something is sharing state and the threading numbers are meaningless."""
     theta, y = make_buffer(n_samples, degree)
-    _, a = ensemble_parallel(theta, y, n_models, n_jobs, backend="loky")
-    _, b = ensemble_parallel(theta, y, n_models, n_jobs, backend="threading")
-    ok = bool(np.array_equal(a, b))
-    print(f"loky vs threading  identical {ok}  max abs diff {np.abs(a - b).max():.3e}")
+    _, a, ma = ensemble_parallel(theta, y, n_models, n_jobs, backend="loky")
+    _, b, mb = ensemble_parallel(theta, y, n_models, n_jobs, backend="threading")
+
+    coefs_equal = bool(np.array_equal(a, b))
+    print(f"loky vs threading  identical {coefs_equal}  "
+          f"max abs diff {np.abs(a - b).max():.3e}")
+
+    # masks must match across backends too. seeding is per member (base_seed + i)
+    # so dispatch order shouldn't matter, but assert it instead of assuming
+    masks_equal = bool(np.array_equal(ma, mb))
+    print(f"masks identical    {masks_equal}")
+
+    # every member should be offered exactly n_features - N_DROP terms
+    expected = ma.shape[1] - N_DROP
+    counts_ok = bool(np.all(ma.sum(axis=1) == expected))
+    print(f"mask counts        {counts_ok}  (expected {expected} per member)")
+
+    ok = coefs_equal and masks_equal and counts_ok
     print(f"-> {'PASS' if ok else 'FAIL'}")
 
 

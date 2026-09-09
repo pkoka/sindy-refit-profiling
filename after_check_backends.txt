@@ -1,0 +1,4 @@
+loky vs threading  identical True  max abs diff 0.000e+00
+masks identical    True
+mask counts        True  (expected 26 per member)
+-> PASS
