@@ -1,0 +1,31 @@
+# Detected supported languages: Python
+name: Rosentic
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  cross-branch-check:
+    name: Cross-branch compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out all branches
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Detect cross-branch conflicts
+        uses: Rosentic/rosentic-action@v1
+        with:
+          mode: audit
+          api-key: ${{ secrets.ROSENTIC_API_KEY }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

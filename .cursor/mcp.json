@@ -1,0 +1,16 @@
+{
+  "_comment": "Rosentic uses uvx on a clean machine. Fallback: pipx run --spec rosentic-mcp==0.2.9 rosentic-mcp",
+  "mcpServers": {
+    "rosentic": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "rosentic-mcp==0.2.9",
+        "rosentic-mcp"
+      ],
+      "env": {
+        "ROSENTIC_API_URL": "https://api.rosentic.com"
+      }
+    }
+  }
+}
